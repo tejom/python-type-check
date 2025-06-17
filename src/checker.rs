@@ -4,9 +4,9 @@ use crate::{
 };
 use colored::Colorize;
 use log::{debug, info};
-use std::cmp::max;
 use std::collections::HashMap;
-use tree_sitter::TreeCursor;
+use std::{cmp::max, vec};
+use tree_sitter::{Node, TreeCursor};
 
 #[derive(Debug)]
 pub struct CheckErr {
@@ -84,6 +84,10 @@ impl<'a> Checker<'a> {
                     self.errors.push(err);
                 });
             }
+            "function_definition" => {
+                self.check_function_def(cursor);
+            }
+            "module" => {} // nodes to ignore
             _ => {
                 debug!("UNSEEN NODE - {}", cursor.node());
             }
@@ -110,12 +114,81 @@ impl<'a> Checker<'a> {
                 TypeVar::Integer(int_val)
             }
             "string" => TypeVar::String(),
+            "return_statement" => {
+                if let Some(n) = node.named_child(0) {
+                    self.infer_type_for_node(&n)
+                        .expect("invalid return statement")
+                } else {
+                    TypeVar::None
+                }
+            }
             "binary_operator" => {
                 TypeVar::BinOp(Place::from_ts_point("binop", node.start_position()))
             }
             _ => TypeVar::Var(Place::exp_from_ts_point(node.start_position())),
         };
         Some(infered_node_type)
+    }
+
+    pub fn infer_fn_body(&mut self, node: &tree_sitter::Node) -> Vec<TypeVar> {
+        let mut return_statement_types: Vec<TypeVar> = Vec::new();
+
+        visit_all_children(&mut node.walk(), &mut |c| {
+            if c.node().kind() == "return_statement" {
+                println!("{}", c.node());
+                return_statement_types.push(
+                    self.infer_type_for_node(&c.node())
+                        .expect("error infering return"),
+                )
+            };
+        });
+
+        return_statement_types
+    }
+
+    pub fn check_function_def(&mut self, cursor: &mut TreeCursor) {
+        println!("{}", cursor.node());
+
+        let mut param_types: Vec<TypeVar> = Vec::new();
+
+        let fn_name = cursor
+            .node()
+            .child_by_field_name("name")
+            .and_then(|n| n.utf8_text(self.src.as_bytes()).ok())
+            .expect("no fn name");
+        let fn_place = Place::from_ts_point(fn_name, cursor.node().start_position());
+
+        let param_node = cursor
+            .node()
+            .child_by_field_name("parameters")
+            .expect("no parameters");
+
+        let body_node = cursor
+            .node()
+            .child_by_field_name("body")
+            .expect("error getting fn body");
+        for node in param_node.named_children(&mut param_node.walk()) {
+            println!("node {}", node);
+            param_types.push(TypeVar::Any());
+            let p_id = node
+                .utf8_text(self.src.as_bytes())
+                .expect("error getting param id");
+            let param_place =
+                Place::from_ts_point(&format!("{fn_name}.{p_id}"), node.start_position());
+            self.binding.insert(param_place, TypeVar::Any());
+        }
+        println!("{}", cursor.node());
+        let return_types = self.infer_fn_body(&body_node);
+
+        println!("Handling fn {} {}", fn_name, param_node);
+        self.binding.insert(
+            fn_place.clone(),
+            TypeVar::Function(fn_place.clone(), param_types, return_types),
+        );
+    }
+
+    pub fn check_fn_call(&mut self, cursor: &mut TreeCursor) -> Result<(), CheckErr> {
+        Ok(())
     }
 
     pub fn check_binop(&mut self, cursor: &mut TreeCursor) -> Result<(), CheckErr> {
@@ -193,7 +266,7 @@ impl<'a> Checker<'a> {
 
     pub fn print_errors(&self) {
         if self.errors.is_empty() {
-            info!("✅ {}", "Type Checks Passed!".bright_green());
+            println!("✅ {}", "Type Checks Passed!".bright_green());
             return;
         }
         let heading = format!("{} Error(s) found:", self.errors.len()).bright_magenta();
@@ -237,5 +310,22 @@ impl<'a> Checker<'a> {
                 println!("{}{}", " ".repeat(col), "".red())
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn find_add_error() {
+        let src = "c = 1 + \"goo\"";
+        let mut checker = Checker::new(src, "test.py");
+
+        let tree = crate::ast::parse(src).expect("Issue parsing tree");
+
+        checker.check_module(&mut tree.walk());
+
+        assert_eq!(checker.errors.len(), 1);
     }
 }

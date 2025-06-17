@@ -37,6 +37,8 @@ pub enum TypeVar {
     String(),
     Call(Place, Vec<TypeVar>, Vec<TypeVar>),
     BinOp(Place),
+    None,
+    Function(Place, Vec<TypeVar>, Vec<TypeVar>),
     Var(Place), // placeholder for unknown
 }
 
@@ -58,9 +60,23 @@ impl std::fmt::Display for TypeVar {
                     .join(", ");
                 write!(f, "Call({}, [{}] -> [{}])", p, params_str, return_str)
             }
+            Self::Function(p, param, ret) => {
+                let params_str = param
+                    .iter()
+                    .map(|x| format!("{}", x))
+                    .collect::<Vec<String>>()
+                    .join(",");
+                let return_str = ret
+                    .iter()
+                    .map(|x| format!("{}", x))
+                    .collect::<Vec<String>>()
+                    .join(", ");
+                write!(f, "Function({}, [{}] -> [{}])", p, params_str, return_str)
+            }
             Self::BinOp(p) => write!(f, "BinOp({})", p),
             Self::Var(p) => write!(f, "Var({})", p),
             Self::String() => write!(f, "String()"),
+            Self::None => write!(f, "None"),
         }
     }
 }

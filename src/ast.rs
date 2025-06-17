@@ -15,3 +15,12 @@ pub fn visit_all_children(cursor: &mut TreeCursor, visit_cb: &mut dyn FnMut(&mut
         visit_all_children(cursor, visit_cb);
     }
 }
+
+pub fn parse(src: &str) -> Option<tree_sitter::Tree> {
+    let mut parser = tree_sitter::Parser::new();
+    parser
+        .set_language(&tree_sitter_python::LANGUAGE.into())
+        .expect("Error loading Python grammar");
+
+    parser.parse(&src, None)
+}

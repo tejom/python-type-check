@@ -1,10 +1,11 @@
-use log::{trace};
+use log::trace;
 use std::fs;
 use tree_sitter::Parser;
 
 mod arg;
 mod ast;
 mod checker;
+mod environment;
 mod pretty_printer;
 mod type_var;
 
@@ -23,18 +24,13 @@ fn main() {
 
     let args = crate::arg::get_args();
 
-    let mut parser = Parser::new();
-    parser
-        .set_language(&tree_sitter_python::LANGUAGE.into())
-        .expect("Error loading Python grammar");
-
     let file_name = args
         .get_one::<String>("file_name")
         .expect("No file name to check");
 
     let source_code = fs::read_to_string(file_name).expect("error opening file");
 
-    let tree = parser.parse(&source_code, None).unwrap();
+    let tree = ast::parse(&source_code).expect("Issue parsing tree");
     let root_node = tree.root_node();
 
     trace!("{}\n{}", &source_code, root_node);
