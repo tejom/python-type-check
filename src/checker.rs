@@ -119,7 +119,7 @@ impl<'a> Checker<'a> {
                 println!("found sig? {}", sig);
                 if let TypeVar::Function(_, _, ret_val) = sig {
                     if ret_val.len() == 1 {
-                        ret_val.get(0).cloned()?
+                        ret_val.first().cloned()?
                     } else {
                         TypeVar::Union(ret_val)
                     }
@@ -265,7 +265,7 @@ impl<'a> Checker<'a> {
             // compare function params and args
             for idx in 0..arg_types.len() {
                 if let Some((n, Ok(arg_ty))) = arg_types.get(idx) {
-                    let b = params.get(0).unwrap();
+                    let b = params.get(idx).unwrap();
                     if !arg_ty.type_check(b) {
                         self.errors.push(CheckErr::new(
                             &format!("Type mismatch {},{}", arg_ty, b),
