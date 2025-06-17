@@ -1,14 +1,14 @@
 use crate::{
+    environment::Environment,
     type_var::{Place, TypeVar},
     visit_all_children,
 };
 use colored::Colorize;
-use log::{debug, info};
-use std::collections::HashMap;
+use log::debug;
 use std::{cmp::max, vec};
 use tree_sitter::{Node, TreeCursor};
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct CheckErr {
     msg: String,
     start_place: Place,
@@ -38,8 +38,8 @@ impl CheckErr {
 }
 
 pub struct Checker<'a> {
-    binding: HashMap<Place, TypeVar>,
-    env: HashMap<String, Place>,
+    //_env: HashMap<String, Place>,
+    env: Environment,
     errors: Vec<CheckErr>,
     src: &'a str,
     file_name: &'a str,
@@ -48,8 +48,7 @@ pub struct Checker<'a> {
 impl<'a> Checker<'a> {
     pub fn new(src: &'a str, file_name: &'a str) -> Self {
         Checker {
-            binding: HashMap::default(),
-            env: HashMap::default(),
+            env: Environment::new(file_name),
             errors: Vec::<CheckErr>::new(),
             src,
             file_name,
@@ -61,8 +60,9 @@ impl<'a> Checker<'a> {
         visit_all_children(cursor, &mut |cur| {
             self.check_visit(cur);
         });
-        self.print_bindings();
-        self.print_env();
+        // self.print_bindings();
+        // self.print_env();
+        self.env.pretty_print();
         self.print_errors();
     }
 
@@ -87,6 +87,11 @@ impl<'a> Checker<'a> {
             "function_definition" => {
                 self.check_function_def(cursor);
             }
+            "call" => {
+                self.check_fn_call(cursor).unwrap_or_else(|err| {
+                    self.errors.push(err);
+                });
+            }
             "module" => {} // nodes to ignore
             _ => {
                 debug!("UNSEEN NODE - {}", cursor.node());
@@ -100,11 +105,27 @@ impl<'a> Checker<'a> {
                 let node_id = node
                     .utf8_text(self.src.as_bytes())
                     .expect("couldnt decode id");
-                let node_place = self.env.get(node_id).expect("identifier not defined");
-                self.binding
-                    .get(node_place)
-                    .expect("identifer doesnt have a type")
-                    .clone()
+                self.env
+                    .var_type(node_id)
+                    .expect("couldnt find type for var")
+            }
+            "call" => {
+                println!("call> {}", node);
+                let sig = self.infer_type_for_node(
+                    &(node
+                        .child_by_field_name("function")
+                        .expect("getting fn name")),
+                )?;
+                println!("found sig? {}", sig);
+                if let TypeVar::Function(_, _, ret_val) = sig {
+                    if ret_val.len() == 1 {
+                        ret_val.get(0).cloned()?
+                    } else {
+                        TypeVar::Union(ret_val)
+                    }
+                } else {
+                    TypeVar::None
+                }
             }
             "integer" => {
                 let int_val: usize = node
@@ -167,27 +188,97 @@ impl<'a> Checker<'a> {
             .node()
             .child_by_field_name("body")
             .expect("error getting fn body");
+
+        self.env.enter_scope(fn_name);
         for node in param_node.named_children(&mut param_node.walk()) {
             println!("node {}", node);
-            param_types.push(TypeVar::Any());
+            param_types.push(TypeVar::Any);
             let p_id = node
                 .utf8_text(self.src.as_bytes())
                 .expect("error getting param id");
-            let param_place =
-                Place::from_ts_point(&format!("{fn_name}.{p_id}"), node.start_position());
-            self.binding.insert(param_place, TypeVar::Any());
+            let param_place = Place::from_ts_point(p_id, node.start_position());
+            self.env.insert_binding(param_place.clone(), TypeVar::Any);
+            self.env.insert_var(p_id, param_place.clone());
         }
         println!("{}", cursor.node());
         let return_types = self.infer_fn_body(&body_node);
 
         println!("Handling fn {} {}", fn_name, param_node);
-        self.binding.insert(
+        self.env.leave_scope();
+        self.env.insert_binding(
             fn_place.clone(),
             TypeVar::Function(fn_place.clone(), param_types, return_types),
         );
+        self.env.insert_var(fn_name, fn_place.clone());
     }
 
     pub fn check_fn_call(&mut self, cursor: &mut TreeCursor) -> Result<(), CheckErr> {
+        println!("fn call {}", cursor.node());
+        let fn_call_node = cursor.node();
+        let fn_name = cursor
+            .node()
+            .child_by_field_name("function")
+            .and_then(|n| n.utf8_text(self.src.as_bytes()).ok())
+            .expect("error getting fn name");
+
+        self.env.enter_scope(fn_name);
+        let fn_sig = self.env.var_type(fn_name);
+        let fn_args_list = cursor
+            .node()
+            .child_by_field_name("arguments")
+            .expect("error getting args");
+
+        if let Some(TypeVar::Function(_, params, _)) = fn_sig {
+            println!("found fnsig {:?} p {}", params, fn_args_list);
+            let mut param_cursor = fn_args_list.walk();
+
+            // convert all of the ast nodes for args to types
+            let arg_types: Vec<(Node, Result<TypeVar, CheckErr>)> = fn_args_list
+                .named_children(&mut param_cursor)
+                .map(|n| {
+                    println!("n:::{}", n);
+                    (
+                        n,
+                        self.infer_type_for_node(&n).ok_or_else(|| {
+                            CheckErr::new(
+                                "no type available",
+                                Place::from_ts_point("fnarg", n.start_position()),
+                                None,
+                            )
+                        }),
+                    )
+                })
+                .collect();
+
+            // check the same amount of args was used for the fn signature
+            if arg_types.len() != params.len() {
+                return Err(CheckErr::new(
+                    &format!(
+                        "Fn called with {} args expected {}",
+                        arg_types.len(),
+                        params.len()
+                    ),
+                    Place::from_ts_point("fncall", fn_call_node.start_position()),
+                    Some(Place::from_ts_point("fncall", fn_call_node.end_position())),
+                ));
+            }
+            // compare function params and args
+            for idx in 0..arg_types.len() {
+                if let Some((n, Ok(arg_ty))) = arg_types.get(idx) {
+                    let b = params.get(0).unwrap();
+                    if !arg_ty.type_check(b) {
+                        self.errors.push(CheckErr::new(
+                            &format!("Type mismatch {},{}", arg_ty, b),
+                            Place::from_ts_point("arg", n.start_position()),
+                            Some(Place::from_ts_point("arg", n.end_position())),
+                        ));
+                    }
+                } else if let Some((_, Err(e))) = arg_types.get(idx) {
+                    self.errors.push(e.clone());
+                }
+            }
+        };
+
         Ok(())
     }
 
@@ -226,11 +317,12 @@ impl<'a> Checker<'a> {
             vec![return_type.clone()],
         );
 
-        self.binding.insert(binop_place.clone(), binop_type.clone());
-        self.binding.insert(a1_place.clone(), a1_type.clone());
-        self.binding.insert(a2_place.clone(), a2_type);
-        self.binding
-            .insert(return_place.clone(), return_type.clone());
+        self.env
+            .insert_binding(binop_place.clone(), binop_type.clone());
+        self.env.insert_binding(a1_place.clone(), a1_type.clone());
+        self.env.insert_binding(a2_place.clone(), a2_type);
+        self.env
+            .insert_binding(return_place.clone(), return_type.clone());
         Ok(())
     }
 
@@ -249,19 +341,8 @@ impl<'a> Checker<'a> {
         let rhs_type = self.infer_type_for_node(&rhs).expect("couldnt infer rhs");
 
         debug!("assignment lhs {} -> {}", left_place, rhs_type);
-        self.binding.insert(left_place.clone(), rhs_type);
-        self.env.insert(id.to_owned(), left_place.clone());
-    }
-
-    pub fn print_bindings(&self) {
-        for (l, r) in &self.binding {
-            debug!("{} -> {}", l, r);
-        }
-    }
-    pub fn print_env(&self) {
-        for (l, r) in &self.env {
-            debug!("{} -> {}", l, r);
-        }
+        self.env.insert_binding(left_place.clone(), rhs_type);
+        self.env.insert_var(id, left_place.clone());
     }
 
     pub fn print_errors(&self) {

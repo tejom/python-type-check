@@ -1,6 +1,5 @@
 use log::trace;
 use std::fs;
-use tree_sitter::Parser;
 
 mod arg;
 mod ast;
@@ -37,5 +36,5 @@ fn main() {
     if args.get_flag("pretty-print") {
         PrettyPrinter::new(&source_code).print_module(&mut tree.walk());
     }
-    Checker::new(&source_code, &file_name).check_module(&mut tree.walk());
+    Checker::new(&source_code, file_name).check_module(&mut tree.walk());
 }

@@ -22,5 +22,5 @@ pub fn parse(src: &str) -> Option<tree_sitter::Tree> {
         .set_language(&tree_sitter_python::LANGUAGE.into())
         .expect("Error loading Python grammar");
 
-    parser.parse(&src, None)
+    parser.parse(src, None)
 }
