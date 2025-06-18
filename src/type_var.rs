@@ -50,7 +50,7 @@ impl TypeVar {
     pub fn type_check(&self, other: &TypeVar) -> bool {
         match (self, other) {
             (TypeVar::Any, _) | (_, TypeVar::Any) => true,
-            (TypeVar::Union(left_tys), TypeVar::Union(right_tys)) => todo!(),
+            (TypeVar::Union(_left_tys), TypeVar::Union(_right_tys)) => todo!(),
             (TypeVar::Union(tys), x) | (x, TypeVar::Union(tys)) => tys.contains(x),
             (l, r) => std::mem::discriminant(l) == std::mem::discriminant(r),
         }

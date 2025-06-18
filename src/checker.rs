@@ -4,7 +4,7 @@ use crate::{
     visit_all_children,
 };
 use colored::Colorize;
-use log::debug;
+use log::{debug, error, log_enabled};
 use std::{cmp::max, vec};
 use tree_sitter::{Node, TreeCursor};
 
@@ -35,6 +35,14 @@ impl CheckErr {
             end_place,
         }
     }
+
+    pub fn new_from_node(msg: &str, n: &tree_sitter::Node) -> Self {
+        CheckErr {
+            msg: msg.to_owned(),
+            start_place: Place::from_ts_point("start", n.start_position()),
+            end_place: Some(Place::from_ts_point("end", n.end_position())),
+        }
+    }
 }
 
 pub struct Checker<'a> {
@@ -60,9 +68,9 @@ impl<'a> Checker<'a> {
         visit_all_children(cursor, &mut |cur| {
             self.check_visit(cur);
         });
-        // self.print_bindings();
-        // self.print_env();
-        self.env.pretty_print();
+        if log_enabled!(log::Level::Debug) {
+            self.env.pretty_print();
+        }
         self.print_errors();
     }
 
@@ -110,13 +118,11 @@ impl<'a> Checker<'a> {
                     .expect("couldnt find type for var")
             }
             "call" => {
-                println!("call> {}", node);
                 let sig = self.infer_type_for_node(
                     &(node
                         .child_by_field_name("function")
                         .expect("getting fn name")),
                 )?;
-                println!("found sig? {}", sig);
                 if let TypeVar::Function(_, _, ret_val) = sig {
                     if ret_val.len() == 1 {
                         ret_val.first().cloned()?
@@ -156,7 +162,7 @@ impl<'a> Checker<'a> {
 
         visit_all_children(&mut node.walk(), &mut |c| {
             if c.node().kind() == "return_statement" {
-                println!("{}", c.node());
+                debug!("{}", c.node());
                 return_statement_types.push(
                     self.infer_type_for_node(&c.node())
                         .expect("error infering return"),
@@ -168,8 +174,6 @@ impl<'a> Checker<'a> {
     }
 
     pub fn check_function_def(&mut self, cursor: &mut TreeCursor) {
-        println!("{}", cursor.node());
-
         let mut param_types: Vec<TypeVar> = Vec::new();
 
         let fn_name = cursor
@@ -191,7 +195,6 @@ impl<'a> Checker<'a> {
 
         self.env.enter_scope(fn_name);
         for node in param_node.named_children(&mut param_node.walk()) {
-            println!("node {}", node);
             param_types.push(TypeVar::Any);
             let p_id = node
                 .utf8_text(self.src.as_bytes())
@@ -200,10 +203,9 @@ impl<'a> Checker<'a> {
             self.env.insert_binding(param_place.clone(), TypeVar::Any);
             self.env.insert_var(p_id, param_place.clone());
         }
-        println!("{}", cursor.node());
         let return_types = self.infer_fn_body(&body_node);
 
-        println!("Handling fn {} {}", fn_name, param_node);
+        debug!("Handling fn {} {}", fn_name, param_node);
         self.env.leave_scope();
         self.env.insert_binding(
             fn_place.clone(),
@@ -212,14 +214,58 @@ impl<'a> Checker<'a> {
         self.env.insert_var(fn_name, fn_place.clone());
     }
 
+    /// Handle reveal_type similar to other type checkers
+    /// Print the type for the variable
+    pub fn call_reveal_type(&self, cursor: &mut TreeCursor) -> Result<(), CheckErr> {
+        let fn_args_list = cursor
+            .node()
+            .child_by_field_name("arguments")
+            .expect("error getting args");
+        let mut arg_list_cursor = fn_args_list.walk();
+        let arg_types: Vec<_> = fn_args_list
+            .named_children(&mut arg_list_cursor)
+            .map(|n| {
+                let arg = n.utf8_text(self.src.as_bytes()).expect("parse error");
+                if let Some(ty) = self.env.var_type(arg) {
+                    let pos = cursor.node().start_position();
+                    println!(
+                        "[{}] {}:{}:{} {} -> {}",
+                        "Reveal type".cyan(),
+                        self.file_name,
+                        pos.row + 1,
+                        pos.column,
+                        arg,
+                        ty
+                    );
+                    Some(ty)
+                } else {
+                    error!("No type for {}", arg);
+                    None
+                }
+            })
+            .collect();
+        // print them all but its an error to have more then one positional arg
+        if arg_types.len() > 1 {
+            return Err(CheckErr::new_from_node("To many arguments", &fn_args_list));
+        } else if arg_types.is_empty() {
+            return Err(CheckErr::new_from_node("No argument give", &fn_args_list));
+        }
+        Ok(())
+    }
+
     pub fn check_fn_call(&mut self, cursor: &mut TreeCursor) -> Result<(), CheckErr> {
-        println!("fn call {}", cursor.node());
+        debug!("fn call {}", cursor.node());
         let fn_call_node = cursor.node();
         let fn_name = cursor
             .node()
             .child_by_field_name("function")
             .and_then(|n| n.utf8_text(self.src.as_bytes()).ok())
             .expect("error getting fn name");
+
+        // special case for `reveal_type`
+        if fn_name == "reveal_type" {
+            return self.call_reveal_type(cursor);
+        }
 
         self.env.enter_scope(fn_name);
         let fn_sig = self.env.var_type(fn_name);
@@ -229,14 +275,13 @@ impl<'a> Checker<'a> {
             .expect("error getting args");
 
         if let Some(TypeVar::Function(_, params, _)) = fn_sig {
-            println!("found fnsig {:?} p {}", params, fn_args_list);
+            debug!("found fn sig {:?} p {}", params, fn_args_list);
             let mut param_cursor = fn_args_list.walk();
 
             // convert all of the ast nodes for args to types
             let arg_types: Vec<(Node, Result<TypeVar, CheckErr>)> = fn_args_list
                 .named_children(&mut param_cursor)
                 .map(|n| {
-                    println!("n:::{}", n);
                     (
                         n,
                         self.infer_type_for_node(&n).ok_or_else(|| {
@@ -367,9 +412,9 @@ impl<'a> Checker<'a> {
             );
             // print context
             let ctx_line_start = max(0, line as i64 - 2);
-            let prefix_len = err.start_place.row.to_string().len();
+            let prefix_len = err.start_place.row.to_string().len() + 1;
             for l in ctx_line_start..(line + 1) as i64 {
-                let prefix = format!("{} | ", l + 1).cyan();
+                let prefix = format!("{:1$} | ", l + 1, prefix_len).cyan();
                 println!(
                     "{}{}",
                     prefix,
