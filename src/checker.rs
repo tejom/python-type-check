@@ -84,7 +84,9 @@ impl<'a> Checker<'a> {
                     "DEFINE      - {}",
                     cursor.node().child_by_field_name("left").unwrap()
                 );
-                self.check_assignment(cursor, self.src)
+                self.check_assignment(cursor).unwrap_or_else(|err| {
+                    self.errors.push(err);
+                });
             }
             "binary_operator" => {
                 self.check_binop(cursor).unwrap_or_else(|err| {
@@ -102,7 +104,7 @@ impl<'a> Checker<'a> {
             }
             "module" => {} // nodes to ignore
             _ => {
-                debug!("UNSEEN NODE - {}", cursor.node());
+                debug!("UNSEEN NODE - {} {}", cursor.node(), cursor.node().kind());
             }
         }
     }
@@ -152,6 +154,12 @@ impl<'a> Checker<'a> {
             "binary_operator" => {
                 TypeVar::BinOp(Place::from_ts_point("binop", node.start_position()))
             }
+            "typed_parameter" => {
+                let type_str = node.child_by_field_name("type")
+                    .and_then(|n| n.utf8_text(self.src.as_bytes()).ok())
+                    .unwrap();
+                TypeVar::from_type_str(type_str).expect("error getting type")
+            }
             _ => TypeVar::Var(Place::exp_from_ts_point(node.start_position())),
         };
         Some(infered_node_type)
@@ -195,18 +203,24 @@ impl<'a> Checker<'a> {
 
         self.env.enter_scope(fn_name);
         for node in param_node.named_children(&mut param_node.walk()) {
-            param_types.push(TypeVar::Any);
+            let p_type = if node.kind() == "typed_parameter" {
+              self.infer_type_for_node(&node).expect("error getting param type")
+            } else {
+                TypeVar::Any
+            };
+            
+            param_types.push(p_type.clone());
             let p_id = node
                 .utf8_text(self.src.as_bytes())
                 .expect("error getting param id");
             let param_place = Place::from_ts_point(p_id, node.start_position());
-            self.env.insert_binding(param_place.clone(), TypeVar::Any);
+            self.env.insert_binding(param_place.clone(),p_type.clone());
             self.env.insert_var(p_id, param_place.clone());
         }
         let return_types = self.infer_fn_body(&body_node);
 
         debug!("Handling fn {} {}", fn_name, param_node);
-        self.env.leave_scope();
+        //self.env.leave_scope();
         self.env.insert_binding(
             fn_place.clone(),
             TypeVar::Function(fn_place.clone(), param_types, return_types),
@@ -313,7 +327,7 @@ impl<'a> Checker<'a> {
                     let b = params.get(idx).unwrap();
                     if !arg_ty.type_check(b) {
                         self.errors.push(CheckErr::new(
-                            &format!("Type mismatch {},{}", arg_ty, b),
+                            &format!("Type mismatch calling fn `{}` Expected {} found {}",fn_name, b, arg_ty),
                             Place::from_ts_point("arg", n.start_position()),
                             Some(Place::from_ts_point("arg", n.end_position())),
                         ));
@@ -371,23 +385,40 @@ impl<'a> Checker<'a> {
         Ok(())
     }
 
-    pub fn check_assignment(&mut self, cursor: &mut TreeCursor, source: &str) {
+    pub fn check_assignment(&mut self, cursor: &mut TreeCursor) -> Result<(),  CheckErr>{
         let node = cursor.node();
+        println!("{}", cursor.node());
         let lhs = node
             .child_by_field_name("left")
             .expect("No lhs in assignment");
         let id = lhs
-            .utf8_text(source.as_bytes())
+            .utf8_text(self.src.as_bytes())
             .expect("couldnt decode value");
+        
         let left_place = Place::from_ts_point(id, lhs.start_position());
         let rhs = node
             .child_by_field_name("right")
             .expect("No rhs in assignment");
         let rhs_type = self.infer_type_for_node(&rhs).expect("couldnt infer rhs");
 
-        debug!("assignment lhs {} -> {}", left_place, rhs_type);
-        self.env.insert_binding(left_place.clone(), rhs_type);
-        self.env.insert_var(id, left_place.clone());
+        if let Some(type_node) = node.child_by_field_name("type") {
+            let ty = TypeVar::from_type_str(&type_node.utf8_text(self.src.as_bytes()).unwrap()).expect("unable to get type");
+            // left hand side of assignment is always going to be what is written in the type
+            self.env.insert_binding(left_place.clone(), ty.clone());
+            self.env.insert_var(id, left_place.clone());
+            debug!("Explicit def type {} {}", type_node, ty);
+            if !ty.type_check(&rhs_type){
+                return Err(CheckErr::new_from_node(&format!("Mismatched types while assigning to '{}' expected {} found {}",id, ty, rhs_type), &node));
+            }
+
+        } else {
+            debug!("assignment with infered type lhs {} -> {}", left_place, rhs_type);
+            self.env.insert_binding(left_place.clone(), rhs_type);
+            self.env.insert_var(id, left_place.clone());
+        }
+        Ok(())
+
+        
     }
 
     pub fn print_errors(&self) {

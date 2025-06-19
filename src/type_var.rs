@@ -1,3 +1,4 @@
+use log::error;
 use tree_sitter::Point;
 
 #[derive(Debug, Eq, Hash, PartialEq, Clone)]
@@ -53,6 +54,14 @@ impl TypeVar {
             (TypeVar::Union(_left_tys), TypeVar::Union(_right_tys)) => todo!(),
             (TypeVar::Union(tys), x) | (x, TypeVar::Union(tys)) => tys.contains(x),
             (l, r) => std::mem::discriminant(l) == std::mem::discriminant(r),
+        }
+    }
+
+    pub fn from_type_str(ty_str: &str) -> Option<Self> {
+        println!("what is node {},", ty_str);
+        match ty_str {
+            "int" => Some(Self::Integer(0)), // default 0, this value probabaly doesnt matter?
+            _ => {error!("{} not able to be converted to type", ty_str); None}
         }
     }
 }

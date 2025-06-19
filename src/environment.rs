@@ -22,7 +22,7 @@ impl Environment {
             live_scopes,
             scopes,
         };
-        env.enter_scope(name);
+        env.create_scope(name);
         env
     }
 
@@ -61,18 +61,23 @@ impl Environment {
         self.lookup_var(var).and_then(|p| self.lookup_binding(&p))
     }
 
-    pub fn enter_scope(&mut self, name: &str) {
-        let scope = if let Some(sc) = self.scopes.get(name).cloned() {
-            sc
-        } else {
-            let new_scope = Rc::new(RefCell::new(Scope::new(name)));
-            self.scopes.insert(name.to_owned(), new_scope.clone());
-            new_scope
-        };
-        self.live_scopes.push(scope.clone());
+    fn create_scope(&mut self, name: &str) {
+        let new_scope = Rc::new(RefCell::new(Scope::new(name)));
+        self.scopes.insert(name.to_owned(), new_scope.clone());
+        self.live_scopes.push(new_scope.clone());
     }
 
-    pub fn leave_scope(&mut self) {
+    pub fn enter_scope(&mut self, name: &str) -> ScopeGuard<'_>{
+        if let Some(sc) = self.scopes.get(name).cloned() {
+            self.live_scopes.push(sc);
+        } else {
+            self.create_scope(name);
+        };
+        
+        ScopeGuard{on_drop: &mut || {self.leave_scope();}}
+    }
+
+    pub(self) fn leave_scope(&mut self) {
         self.live_scopes.pop();
     }
 
@@ -80,6 +85,18 @@ impl Environment {
         for (name, scope) in &self.scopes {
             println!("{} {}", name, scope.borrow());
         }
+    }
+}
+
+pub struct ScopeGuard<'a> {
+    //env: &'a mut Environment,
+    on_drop: &'a mut dyn FnMut(),
+}
+
+impl Drop for ScopeGuard <'_>{
+    fn drop(&mut self){
+        println!("leaving scope");
+        (self.on_drop)();
     }
 }
 
@@ -136,7 +153,7 @@ mod tests {
         };
         let ty = TypeVar::String();
         e.insert_binding(pl.clone(), ty.clone());
-        e.enter_scope("next_level");
+        let _g = e.enter_scope("next_level");
 
         let pl2 = Place {
             name: "b".to_owned(),
@@ -153,7 +170,7 @@ mod tests {
         let res = e.lookup_binding(&pl2);
         assert_eq!(res, None);
 
-        e.enter_scope("next_level");
+        _ = e.enter_scope("next_level");
         let res = e.lookup_binding(&pl2).unwrap();
 
         assert_eq!(res, ty2)
