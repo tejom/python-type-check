@@ -58,10 +58,13 @@ impl TypeVar {
     }
 
     pub fn from_type_str(ty_str: &str) -> Option<Self> {
-        println!("what is node {},", ty_str);
         match ty_str {
             "int" => Some(Self::Integer(0)), // default 0, this value probabaly doesnt matter?
-            _ => {error!("{} not able to be converted to type", ty_str); None}
+            "str" => Some(Self::String()),
+            _ => {
+                error!("{} not able to be converted to type", ty_str);
+                None
+            }
         }
     }
 }

@@ -1,12 +1,14 @@
+use std::cell::RefCell;
 use std::collections::HashMap;
+use std::rc::Rc;
 
 use crate::type_var::{Place, TypeVar};
 
 pub struct Scope {
     name: String,
-    /// Maps a Place in the ast/source to a type
+    /// Maps a Place in the ast/source to a TypeVar
     bindings: HashMap<Place, TypeVar>,
-    /// Maps the identifier to a place of its current value
+    /// Maps the identifier(as a String) to a place of its current value
     var_place_map: HashMap<String, Place>,
 }
 
@@ -48,5 +50,34 @@ impl std::fmt::Display for Scope {
             writeln!(f, "{} -> {}", var, pl)?;
         }
         Ok(())
+    }
+}
+
+/// Wrapper around a Vec to act as a stack of Scopes
+/// Implementation is just deref for the inner Vec
+/// This exists to make it possible to implement StackGuard in the environment
+pub struct ScopeStack {
+    stack: Vec<Rc<RefCell<Scope>>>,
+}
+
+impl ScopeStack {
+    pub fn new() -> Self {
+        Self {
+            stack: Vec::<Rc<RefCell<Scope>>>::new(),
+        }
+    }
+}
+
+impl std::ops::Deref for ScopeStack {
+    type Target = Vec<Rc<RefCell<Scope>>>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.stack
+    }
+}
+
+impl std::ops::DerefMut for ScopeStack {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.stack
     }
 }
